@@ -14,14 +14,19 @@ class Tanker:
         self.capacity = capacity
         self.temperature = 20
         self.pressure = 1.0
+        self.is_broken = False
         self.lock = threading.Lock()
 
     def dispense_fuel(self, fuel_quantity):
         with self.lock:
+            if self.is_broken:
+                print(f"Tanker {self.tanker_id} is broken and cannot dispense fuel!")
+                return False
             if self.fuel_level >= fuel_quantity:
                 self.fuel_level -= fuel_quantity
                 print(
-                    f"Gived {fuel_quantity} l of fuel {self.fuel_type} from {self.tanker_id}! Fuel level is {self.fuel_level} l")
+                    f"Gived {fuel_quantity} l of fuel {self.fuel_type} from {self.tanker_id}! Fuel level is {self.fuel_level} l"
+                )
                 return True
             else:
                 print(f"Not enough fuel in {self.tanker_id}!")
@@ -29,11 +34,21 @@ class Tanker:
 
     def update(self, level, temperature, pressure):
         with self.lock:
+            if random.random() < 0.6:
+                temperature = random.randint(45, 60)
+                pressure = random.uniform(2.5, 3.0)
+
             self.fuel_level = max(0, min(level, self.capacity))
             self.temperature = temperature
             self.pressure = pressure
-            print(
-                f"Tanker {self.tanker_id} fuel level is: {self.fuel_level} l, temperature is: {self.temperature}°C, pressure is: {self.pressure} Bar")
+
+            if self.temperature > 40 or self.temperature < -10 or self.pressure > 2.0 or self.pressure < 0.5:
+                self.is_broken = True
+            else:
+                self.is_broken = False
+
+            print(f"Tanker {self.tanker_id} fuel level is: {self.fuel_level} l, temperature is: {self.temperature}°C, pressure is: {self.pressure} Bar")
+            return True
 
 
 class Station:
@@ -44,10 +59,14 @@ class Station:
         self.dispensed_fuel = 0.0
         self.sold_fuel = 0.0
         self.is_busy = False
+        self.is_broken = False
         self.lock = threading.Lock()
 
     def start_fueling(self, fuel_quantity):
         with self.lock:
+            if self.is_broken:
+                print(f"Station {self.station_id} is broken and cannot start fueling!")
+                return False
             if not self.is_busy:
                 print(f"Station {self.station_id} start dispensing {fuel_quantity}l of {self.fuel_type}!")
                 self.is_busy = True
@@ -59,10 +78,13 @@ class Station:
 
     def stop_fueling(self, fuel_quantity):
         with self.lock:
+            if self.is_broken:
+                print(f"Station {self.station_id} is broken and cannot stop fueling!")
+                return False
             if self.is_busy:
                 self.sold_fuel += fuel_quantity
                 print(
-                    f"Station {self.station_id} sold fuel: {fuel_quantity}l, total cost: {fuel_quantity * self.price}")
+                    f"Station {self.station_id} sold fuel: {fuel_quantity}l, total price: {fuel_quantity * self.price}")
                 self.is_busy = False
                 self.dispensed_fuel = 0.0
                 print(f"Station {self.station_id} with fuel {self.fuel_type} is free!")
@@ -89,9 +111,12 @@ class TankerSystemControl:
         self.alerts = []
         self.running = False
         self.server = Server()
+        self.tanker_nodes = {}
+        self.station_nodes = {}
         self.lock = threading.Lock()
 
     def auto_fueling(self, fuel_type, fuel_quantity):
+        print(f"Attempting to fuel {fuel_type} with {fuel_quantity}l")
         try:
             tanker = next(tanker for tanker in self.Tankers if tanker.fuel_type == fuel_type)
             station = next(station for station in self.Stations if station.fuel_type == fuel_type)
@@ -101,7 +126,7 @@ class TankerSystemControl:
 
         if station.start_fueling(fuel_quantity):
             if tanker.dispense_fuel(fuel_quantity):
-                time.sleep(3)
+                time.sleep(1)
                 station.stop_fueling(fuel_quantity)
                 return True
             else:
@@ -111,63 +136,118 @@ class TankerSystemControl:
 
     def system_monitoring(self):
         while self.running:
-            with self.lock:
+            try:
                 for tanker in self.Tankers:
-                    # print(f"Monitoring {tanker.tanker_id}: fuel={tanker.fuel_level} l, temp={tanker.temperature}°C, pressure={tanker.pressure} Bar")
+                    self.tanker_nodes[tanker.tanker_id]["FuelLevel"].set_value(tanker.fuel_level)
+                    self.tanker_nodes[tanker.tanker_id]["Temperature"].set_value(tanker.temperature)
+                    self.tanker_nodes[tanker.tanker_id]["Pressure"].set_value(tanker.pressure)
+                    self.tanker_nodes[tanker.tanker_id]["IsBroken"].set_value(tanker.is_broken)
+
                     if tanker.fuel_level < 500:
                         self.add_alert(f"Low fuel in {tanker.tanker_id}: {tanker.fuel_level} l")
                     if tanker.temperature > 40 or tanker.temperature < -10:
-                        self.add_alert(f"Abnormal temperature in {tanker.tanker_id}: {tanker.temperature} °C")
+                        self.add_alert(f"Abnormal temperature in {tanker.tanker_id}: {tanker.temperature:.1f} °C")
                     if tanker.pressure > 2.0 or tanker.pressure < 0.5:
-                        self.add_alert(f"Abnormal pressure in {tanker.tanker_id}: {tanker.pressure} Bar")
-            time.sleep(2)
+                        self.add_alert(f"Abnormal pressure in {tanker.tanker_id}: {tanker.pressure:.1f} Bar")
+
+                for station in self.Stations:
+                    self.station_nodes[station.station_id]["DispensedFuel"].set_value(station.dispensed_fuel)
+                    self.station_nodes[station.station_id]["SoldFuel"].set_value(station.sold_fuel)
+                    self.station_nodes[station.station_id]["IsBusy"].set_value(station.is_busy)
+                    self.station_nodes[station.station_id]["IsBroken"].set_value(station.is_broken)
+
+                time.sleep(1)
+            except Exception as e:
+                print(f"Error in system_monitoring: {e}")
+                time.sleep(1)
 
     def add_alert(self, message):
+        print(f"Adding alert: {message}")
         with self.lock:
             self.alerts.append(message)
-            self.alerts_node.set_value("; ".join(self.alerts))
-            print(f"ACCIDENT: {message}")
-            self.handle_emergency(message)
+            try:
+                self.alerts_node.set_value("; ".join(self.alerts))
+            except Exception as e:
+                print(f"Failed to update alerts_node: {e}")
+        print(f"ACCIDENT: {message}")
+        self.handle_emergency(message)
 
     def handle_emergency(self, message):
         print(f"Handling emergency: {message}")
         if "Low fuel" in message:
             print("Started fuel order procedure...")
             time.sleep(3)
-            for tanker in self.Tankers:  # Исправлена опечатка
-                tanker.update(2000, tanker.temperature, tanker.pressure)
+            for tanker in self.Tankers:
+                tanker.update(tanker.capacity, tanker.temperature, tanker.pressure)
             print("Fuel was delivered!")
         elif "Abnormal temperature" in message or "Abnormal pressure" in message:
             print("Stopping all stations...")
             for station in self.Stations:
                 if station.is_busy:
                     station.stop_fueling(0)
+                    station.is_broken = True
+            for tanker in self.Tankers:
+                if tanker.temperature > 40 or tanker.temperature < -10:
+                    tanker.temperature = random.uniform(-10, 40)
+                    tanker.is_broken = True
+                    print(f"Corrected temperature for {tanker.tanker_id}: {tanker.temperature:.1f} °C")
+                if tanker.pressure > 2.0 or tanker.pressure < 0.5:
+                    tanker.pressure = random.uniform(0.5, 2.0)
+                    tanker.is_broken = True
+                    print(f"Corrected pressure for {tanker.tanker_id}: {tanker.pressure:.1f} Bar")
+            with self.lock:
+                self.alerts.clear()
+                try:
+                    self.alerts_node.set_value("")
+                except Exception as e:
+                    print(f"Failed to clear alerts_node: {e}")
 
     def run_opcua_server(self):
-        self.server.set_endpoint("opc.tcp://127.0.0.1:4840/")
-        self.server.set_server_name("GasStationServer")
-        self.server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
+        try:
+            self.server.set_endpoint("opc.tcp://127.0.0.1:4840/")
+            self.server.set_server_name("GasStationServer")
+            idx = self.server.register_namespace("TankerSystemControl")
+            objects = self.server.get_objects_node()
+            tankers_node = objects.add_object(idx, "Tankers")
+            stations_node = objects.add_object(idx, "Stations")
 
-        idx = self.server.register_namespace("TankerSystemControl")
-        objects = self.server.get_objects_node()
-        tankers_node = objects.add_object(idx, "Tankers")
-        stations_node = objects.add_object(idx, "Stations")
-        self.alerts_node = objects.add_object(idx, "Alerts").add_variable(idx, "Messages", "").set_writable()
+            alerts_obj = objects.add_object(idx, "Alerts")
+            self.alerts_node = alerts_obj.add_variable(idx, "Messages", "")
+            self.alerts_node.set_writable()
 
-        for tanker in self.Tankers:
-            tanker_node = tankers_node.add_object(idx, tanker.tanker_id)
-            tanker_node.add_variable(idx, "FuelType", tanker.fuel_type).set_read_only()
-            tanker_node.add_variable(idx, "FuelLevel", tanker.fuel_level).set_writable()
-            tanker_node.add_variable(idx, "Temperature", tanker.temperature).set_writable()
-            tanker_node.add_variable(idx, "Pressure", tanker.pressure).set_writable()
+            for tanker in self.Tankers:
+                tanker_node = tankers_node.add_object(idx, tanker.tanker_id)
+                self.tanker_nodes[tanker.tanker_id] = {
+                    "FuelType": tanker_node.add_variable(idx, "FuelType", tanker.fuel_type),
+                    "FuelLevel": tanker_node.add_variable(idx, "FuelLevel", tanker.fuel_level),
+                    "Temperature": tanker_node.add_variable(idx, "Temperature", tanker.temperature),
+                    "Pressure": tanker_node.add_variable(idx, "Pressure", tanker.pressure),
+                    "IsBroken": tanker_node.add_variable(idx, "IsBroken", tanker.is_broken)
+                }
+                self.tanker_nodes[tanker.tanker_id]["FuelType"].set_read_only()
+                self.tanker_nodes[tanker.tanker_id]["FuelLevel"].set_writable()
+                self.tanker_nodes[tanker.tanker_id]["Temperature"].set_writable()
+                self.tanker_nodes[tanker.tanker_id]["Pressure"].set_writable()
+                self.tanker_nodes[tanker.tanker_id]["IsBroken"].set_writable()
 
-        for station in self.Stations:
-            station_node = stations_node.add_object(idx, station.station_id)
-            station_node.add_variable(idx, "FuelType", station.fuel_type).set_read_only()
-            station_node.add_variable(idx, "Price", station.price).set_read_only()
-            station_node.add_variable(idx, "DispensedFuel", station.dispensed_fuel).set_writable()
-            station_node.add_variable(idx, "SoldFuel", station.sold_fuel).set_read_only()
-            station_node.add_variable(idx, "IsBusy", station.is_busy).set_writable()
+            for station in self.Stations:
+                station_node = stations_node.add_object(idx, station.station_id)
+                self.station_nodes[station.station_id] = {
+                    "FuelType": station_node.add_variable(idx, "FuelType", station.fuel_type),
+                    "Price": station_node.add_variable(idx, "Price", station.price),
+                    "DispensedFuel": station_node.add_variable(idx, "DispensedFuel", station.dispensed_fuel),
+                    "SoldFuel": station_node.add_variable(idx, "SoldFuel", station.sold_fuel),
+                    "IsBusy": station_node.add_variable(idx, "IsBusy", station.is_busy),
+                    "IsBroken": station_node.add_variable(idx, "IsBroken", station.is_broken)
+                }
+                self.station_nodes[station.station_id]["Price"].set_read_only()
+                self.station_nodes[station.station_id]["DispensedFuel"].set_writable()
+                self.station_nodes[station.station_id]["SoldFuel"].set_writable()
+                self.station_nodes[station.station_id]["IsBusy"].set_writable()
+                self.station_nodes[station.station_id]["IsBroken"].set_writable()
+
+        except Exception as e:
+            print(f"Error setting up OPC UA server: {e}")
 
 
 def start(tanker_system):
@@ -183,31 +263,48 @@ def start(tanker_system):
 
 def stop(tanker_system):
     tanker_system.running = False
-    tanker_system.server.stop()
-    print("OPC UA server was stopped")
+    try:
+        tanker_system.server.stop()
+        print("OPC UA server was stopped")
+    except Exception as e:
+        print(f"Error stopping server: {e}")
 
+
+# def main():
+#     print("Starting...")
+#     tanker_system_control = TankerSystemControl()
+#     start(tanker_system_control)
+#
+#     try:
+#         while True:
+#             for station in tanker_system_control.Stations:
+#                 fuel_quantity = random.randint(50, 200)
+#                 tanker_system_control.auto_fueling(station.fuel_type, fuel_quantity)
+#
+#             for tanker in tanker_system_control.Tankers:
+#                 fuel_level = random.randint(0, 600)
+#                 temperature = random.uniform(-15, 50)
+#                 pressure = random.uniform(0.1, 3.0)
+#                 tanker.update(fuel_level, temperature, pressure)
+#
+#             time.sleep(10)
+#     except Exception as e:
+#         print(f"Error in main loop: {e}")
+#     finally:
+#         stop(tanker_system_control)
 
 def main():
     print("Starting...")
     tanker_system_control = TankerSystemControl()
     start(tanker_system_control)
-
     try:
         while True:
-            # fuel = random.choice(list(fuel_dict.values()))
             for station in tanker_system_control.Stations:
                 fuel_quantity = random.randint(50, 200)
                 tanker_system_control.auto_fueling(station.fuel_type, fuel_quantity)
-
-            for tanker in tanker_system_control.Tankers:
-                fuel_level = random.randint(0, 600)
-                temperature = random.uniform(-15, 50)
-                pressure = random.uniform(0.1, 3.0)
-                # print(f"Updating {tanker.tanker_id} with level={fuel_level}, temp={temperature:.1f}, pressure={pressure:.2f}")
-                tanker.update(fuel_level, temperature, pressure)
-
-            time.sleep(5)
-
+            time.sleep(10)
+    except Exception as e:
+        print(f"Error in main loop: {e}")
     finally:
         stop(tanker_system_control)
 
